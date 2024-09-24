@@ -1,0 +1,5 @@
+2024-09-24 12:15:49,775 INFO Blur: blur_kernel_size 41, sigma: [0.1, 10]
+2024-09-24 12:15:49,775 INFO Downsample: downsample_range [0.8, 8]
+2024-09-24 12:15:49,775 INFO Noise: [0, 20]
+2024-09-24 12:15:49,775 INFO JPEG compression: [60, 100]
+2024-09-24 12:15:49,776 INFO Use random color jitter. Prob: 0.3, shift: 20

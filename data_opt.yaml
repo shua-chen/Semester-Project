@@ -1,4 +1,5 @@
 image_folder: '/scratch/students/2024-fall-shuhua/dataset/FFHQ/512'
+log_folder: '/scratch/students/2024-fall-shuhua/code/sp/logs'
 
 mean: [0.5, 0.5, 0.5]
 std: [0.5, 0.5, 0.5]
