@@ -942,7 +942,6 @@ def prepare_train_dataset(dataset, accelerator,opt):
             transforms.CenterCrop(args.resolution),
             transforms.ToTensor(),   
         ])
-        img = trans(img)
 
         # Convert image to numpy array
         img_gt = np.array(img).astype(np.float32)/255.0        
