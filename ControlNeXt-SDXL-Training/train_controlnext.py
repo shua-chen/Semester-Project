@@ -615,6 +615,7 @@ def parse_args(input_args=None):
         help=(
             "A yaml file containing the training data options. The yaml file must contain the following"
             " keys: `image_folder`, `mean`, `std`, `out_size`, `blur_kernel_size`, `kernel_list`, `kernel_prob`,"
+            " `blur_sigma`, `downsample_range`, `noise_range`, `jpeg_range`, `color_jitter_prob`, `color_jitter_shift`,"
         ),
     )
     parser.add_argument(
