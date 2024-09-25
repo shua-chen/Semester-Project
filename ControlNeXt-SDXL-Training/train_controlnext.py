@@ -23,6 +23,7 @@ import os
 import random
 import shutil
 import yaml
+import cv2
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -35,8 +36,9 @@ import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedType, ProjectConfiguration, set_seed
-#from datasets import load_dataset
-from prepare_data.FFHQDegraDataset import FFHQDegraDataset
+from datasets import load_dataset
+from prepare_data.utils import color_jitter, color_jitter_pt
+from prepare_data import degradations as degradations
 from huggingface_hub import create_repo, upload_folder
 from packaging import version
 from PIL import Image
@@ -757,8 +759,8 @@ def get_train_dataset(args, accelerator):
             #             cache_dir=args.cache_dir,
             #         )
             '''修改后'''
-            opt=yaml.load(open(args.train_data_opt))
-            dataset = FFHQDegraDataset(opt)
+
+            dataset =load_dataset("imagefolder",data_dir=args.train_data_dir,drop_labels=True)
                 # See more about loading custom images at
                 # https://huggingface.co/docs/datasets/v2.0.0/en/dataset_script
             break
@@ -803,22 +805,19 @@ def get_train_dataset(args, accelerator):
     #             f"`--conditioning_image_column` value '{args.conditioning_image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
     #         )
 
-    # with accelerator.main_process_first():
-    #     train_dataset = dataset["train"].shuffle(seed=args.seed)
-    #     if args.max_train_samples is not None:
-    #         train_dataset = train_dataset.select(range(args.max_train_samples))
-    # return train_dataset
+    with accelerator.main_process_first():
+        train_dataset = dataset["train"].shuffle(seed=args.seed)
+        if args.max_train_samples is not None:
+            train_dataset = train_dataset.select(range(args.max_train_samples))
 
-    '''修改后'''
-    train_dataset = dataset
-    if args.max_train_samples is not None:
-        indices = list(range(len(train_dataset)))
-        random.seed(args.seed)
-        random.shuffle(indices)
-        train_dataset = torch.utils.data.Subset(train_dataset,index=indices)
-    if args.max_train_samples is not None:
-        train_dataset = torch.utils.data.Subset(train_dataset, range(args.max_train_samples))
+    def add_prompt_column(examples):
+        examples[args.caption_column] = [args.generate_prompt for _ in examples[args.image_column]]
+        return examples
+    train_dataset = train_dataset.map(add_prompt_column)
+
     return train_dataset
+
+
 
 
 # Adapted from pipelines.StableDiffusionXLPipeline.encode_prompt
@@ -862,39 +861,153 @@ def encode_prompt(prompt_batch, text_encoders, tokenizers, proportion_empty_prom
     return prompt_embeds, pooled_prompt_embeds
 
 
-def prepare_train_dataset(dataset, accelerator):
-    image_transforms = transforms.Compose(
-        [
+#def prepare_train_dataset(dataset, accelerator):
+    # image_transforms = transforms.Compose(
+    #     [
+    #         transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+    #         transforms.CenterCrop(args.resolution),
+    #         transforms.ToTensor(),
+    #         transforms.Normalize([0.5], [0.5]),
+    #     ]
+    # )
+
+    # conditioning_image_transforms = transforms.Compose(
+    #     [
+    #         transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+    #         transforms.CenterCrop(args.resolution),
+    #         transforms.ToTensor(),
+    #     ]
+    # )
+
+    # def preprocess_train(examples):
+    #     images = [image.convert("RGB") for image in examples[args.image_column]]
+    #     images = [image_transforms(image) for image in images]
+
+    #     conditioning_images = [image.convert("RGB") for image in examples[args.conditioning_image_column]]
+    #     conditioning_images = [conditioning_image_transforms(image) for image in conditioning_images]
+
+    #     examples["pixel_values"] = images
+    #     examples["conditioning_pixel_values"] = conditioning_images
+
+    #     return examples
+
+    # with accelerator.main_process_first():
+    #     dataset = dataset.with_transform(preprocess_train)
+
+    # return dataset
+def prepare_train_dataset(dataset, accelerator,opt):
+    kernel_list=opt['kernel_list']
+    kernel_prob=opt['kernel_prob']
+    blur_kernel_size=opt['blur_kernel_size']
+    blur_sigma=opt['blur_sigma']
+    downsample_range=opt['downsample_range']
+    noise_range=opt['noise_range']
+    jpeg_range=opt['jpeg_range']
+    color_jitter_prob=opt.get('color_jitter_prob')
+    color_jitter_pt_prob=opt.get('color_jitter_pt_prob')
+    color_jitter_shift=opt.get('color_jitter_shift', 20)
+    gray_prob=opt.get('gray_prob')
+    color_jitter_shift /= 255.
+
+    def hq_img_transform(img):
+        trans = transforms.Compose([
+            transforms.RandomHorizontalFlip(p=0.5 if opt['use_hflip'] else 0),  
+            transforms.RandomVerticalFlip(p=0.5 if opt['use_vflip'] else 0),   
+            transforms.RandomRotation(degrees=opt.get('rotate', 0)),
             transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
             transforms.CenterCrop(args.resolution),
             transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]),
-        ]
-    )
+            transforms.Normalize([0.5], [0.5]),   
+        ])
+        img_gt = np.array(img).astype(np.float32)/255.0        
+        
+        h, w, _ = img_gt.shape
+        if opt.get('gt_gray'):  # whether convert GT to gray images
+            img_gt = cv2.cvtColor(img_gt, cv2.COLOR_BGR2GRAY)
+            img_gt = np.tile(img_gt[:, :, None], [1, 1, 3])  # repeat the color channels
 
-    conditioning_image_transforms = transforms.Compose(
-        [
+        # Convert pixel values to the range 0-255 and clip values outside this range
+        img_gt = np.clip((img_gt * 255).round(), 0, 255).astype(np.uint8)
+        # BGR to RGB, numpy to PIL Image
+        img_gt = Image.fromarray(img_gt)
+        img_gt=trans(img_gt)
+        return img_gt
+        
+    def degrad(img):
+        trans_lq = transforms.Compose([
+            transforms.RandomHorizontalFlip(p=0.5 if opt['use_hflip'] else 0),  
+            transforms.RandomVerticalFlip(p=0.5 if opt['use_vflip'] else 0),   
+            transforms.RandomRotation(degrees=opt.get('rotate', 0)),
             transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
             transforms.CenterCrop(args.resolution),
-            transforms.ToTensor(),
-        ]
-    )
+            transforms.ToTensor(),   
+        ])
+        img = trans(img)
 
-    def preprocess_train(examples):
-        images = [image.convert("RGB") for image in examples[args.image_column]]
-        images = [image_transforms(image) for image in images]
+        # Convert image to numpy array
+        img_gt = np.array(img).astype(np.float32)/255.0        
+        
+        h, w, _ = img_gt.shape
+        
+        # ------------------------ generate lq image ------------------------ #
+        # blur
+        kernel = degradations.random_mixed_kernels(
+            kernel_list,
+            kernel_prob,
+            blur_kernel_size,
+            blur_sigma,
+            blur_sigma, [-math.pi, math.pi],
+            noise_range=None)
+        img_lq = cv2.filter2D(img_gt, -1, kernel)
+        # downsample
+        scale = np.random.uniform(downsample_range[0], downsample_range[1])
+        img_lq = cv2.resize(img_lq, (int(w // scale), int(h // scale)), interpolation=cv2.INTER_LINEAR)
+        # noise
+        if noise_range is not None:
+            img_lq = degradations.random_add_gaussian_noise(img_lq, noise_range)
+        # jpeg compression
+        if jpeg_range is not None:
+            img_lq = degradations.random_add_jpg_compression(img_lq, jpeg_range)
 
-        conditioning_images = [image.convert("RGB") for image in examples[args.conditioning_image_column]]
-        conditioning_images = [conditioning_image_transforms(image) for image in conditioning_images]
+        # resize to original size
+        img_lq = cv2.resize(img_lq, (w, h), interpolation=cv2.INTER_LINEAR)
 
-        examples["pixel_values"] = images
-        examples["conditioning_pixel_values"] = conditioning_images
+        # random color jitter (only for lq)
+        if color_jitter_prob is not None and (np.random.uniform() < color_jitter_prob):
+            img_lq = color_jitter(img_lq, color_jitter_shift)
+        # random to gray (only for lq)
+        if gray_prob is not None and np.random.uniform() < gray_prob:
+            img_lq = cv2.cvtColor(img_lq, cv2.COLOR_BGR2GRAY)
+            img_lq = np.tile(img_lq[:, :, None], [1, 1, 3])
+            
 
+        # BGR to RGB, HWC to CHW, numpy to tensor
+        img_lq = torch.from_numpy(img_lq).permute(2, 0, 1).float()
+
+        # random color jitter (pytorch version) (only for lq)
+        if color_jitter_pt_prob is not None and (np.random.uniform() < color_jitter_pt_prob):
+            brightness = opt.get('brightness', (0.5, 1.5))
+            contrast = opt.get('contrast', (0.5, 1.5))
+            saturation = opt.get('saturation', (0, 1.5))
+            hue = opt.get('hue', (-0.1, 0.1))
+            img_lq = color_jitter_pt(img_lq, brightness, contrast, saturation, hue)
+
+        # round and clip
+        img_lq = torch.clamp((img_lq * 255.0).round(), 0, 255) / 255.
+        
+        # Convert img_gt and img_lq to PIL Image format and ensure they are in RGB mode
+        img_lq = transforms.ToPILImage()(img_lq).convert("RGB")
+        img_lq=trans_lq(img_lq)
+        return img_lq
+    def process_dataset(examples):
+        hq_images=[hq_img_transform(exam_image) for exam_image in examples['image']]
+        lq_images=[degrad(exam_image) for exam_image in examples['image']]
+        examples['pixel_values']=hq_images
+        examples['conditioning_pixel_values']=lq_images
         return examples
 
     with accelerator.main_process_first():
-        dataset = dataset.with_transform(preprocess_train)
-
+        dataset = dataset.with_transform(process_dataset)
     return dataset
 
 
@@ -935,6 +1048,7 @@ def main(args):
         )
 
     logging_dir = Path(args.output_dir, args.logging_dir)
+    opt=yaml.load(open(args.train_data_opt))
 
     if torch.backends.mps.is_available() and args.mixed_precision == "bf16":
         # due to pytorch#99272, MPS does not yet support bfloat16.
@@ -1229,7 +1343,7 @@ def main(args):
     torch.cuda.empty_cache()
 
     # Then get the training dataset ready to be passed to the dataloader.
-    train_dataset = prepare_train_dataset(train_dataset, accelerator)
+    train_dataset = prepare_train_dataset(train_dataset, accelerator,opt)
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
