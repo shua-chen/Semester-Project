@@ -634,6 +634,12 @@ def parse_args(input_args=None):
         help="The column of the dataset containing a caption or a list of captions.",
     )
     parser.add_argument(
+        "--generate_prompt",
+        type=str,
+        default="A high resolution human face image",
+        help="The prompt to generate images.",
+    )
+    parser.add_argument(
         "--max_train_samples",
         type=int,
         default=None,
@@ -909,43 +915,28 @@ def prepare_train_dataset(dataset, accelerator,opt):
     color_jitter_shift=opt.get('color_jitter_shift', 20)
     gray_prob=opt.get('gray_prob')
     color_jitter_shift /= 255.
-
-    def hq_img_transform(img):
+      
+    def degrad(img):
         trans = transforms.Compose([
             transforms.RandomHorizontalFlip(p=0.5 if opt['use_hflip'] else 0),  
             transforms.RandomVerticalFlip(p=0.5 if opt['use_vflip'] else 0),   
-            transforms.RandomRotation(degrees=opt.get('rotate', 0)),
+            transforms.RandomRotation(degrees=opt.get('rotate', 0)),   
+        ])
+        gt_trans=transforms.Compose([
             transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
             transforms.CenterCrop(args.resolution),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5]),   
         ])
-        img_gt = np.array(img).astype(np.float32)/255.0        
-        
-        h, w, _ = img_gt.shape
-        if opt.get('gt_gray'):  # whether convert GT to gray images
-            img_gt = cv2.cvtColor(img_gt, cv2.COLOR_BGR2GRAY)
-            img_gt = np.tile(img_gt[:, :, None], [1, 1, 3])  # repeat the color channels
-
-        # Convert pixel values to the range 0-255 and clip values outside this range
-        img_gt = np.clip((img_gt * 255).round(), 0, 255).astype(np.uint8)
-        # BGR to RGB, numpy to PIL Image
-        img_gt = Image.fromarray(img_gt)
-        img_gt=trans(img_gt)
-        return img_gt
-        
-    def degrad(img):
-        trans_lq = transforms.Compose([
-            transforms.RandomHorizontalFlip(p=0.5 if opt['use_hflip'] else 0),  
-            transforms.RandomVerticalFlip(p=0.5 if opt['use_vflip'] else 0),   
-            transforms.RandomRotation(degrees=opt.get('rotate', 0)),
+        lq_trans=transforms.Compose([
             transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
             transforms.CenterCrop(args.resolution),
-            transforms.ToTensor(),   
+            transforms.ToTensor(),  
         ])
+        img_gt = trans(img)
 
         # Convert image to numpy array
-        img_gt = np.array(img).astype(np.float32)/255.0        
+        img_gt = np.array(img_gt).astype(np.float32)/255.0        
         
         h, w, _ = img_gt.shape
         
@@ -992,18 +983,31 @@ def prepare_train_dataset(dataset, accelerator,opt):
             hue = opt.get('hue', (-0.1, 0.1))
             img_lq = color_jitter_pt(img_lq, brightness, contrast, saturation, hue)
 
+        # Convert pixel values to the range 0-255 and clip values outside this range
+        img_gt = np.clip((img_gt * 255).round(), 0, 255).astype(np.uint8)
+        # BGR to RGB, numpy to PIL Image
+        img_gt = Image.fromarray(img_gt).convert("RGB")
+
         # round and clip
         img_lq = torch.clamp((img_lq * 255.0).round(), 0, 255) / 255.
         
         # Convert img_gt and img_lq to PIL Image format and ensure they are in RGB mode
         img_lq = transforms.ToPILImage()(img_lq).convert("RGB")
-        img_lq=trans_lq(img_lq)
-        return img_lq
+        img_gt=gt_trans(img_gt)
+        img_lq=lq_trans(img_lq)
+        # return shape 2*c*h*w
+        stack_imgs=torch.stack([img_gt, img_lq])
+        return stack_imgs
+    
     def process_dataset(examples):
-        hq_images=[hq_img_transform(exam_image) for exam_image in examples['image']]
-        lq_images=[degrad(exam_image) for exam_image in examples['image']]
-        examples['pixel_values']=hq_images
-        examples['conditioning_pixel_values']=lq_images
+        new_images=[degrad(exam_image) for exam_image in examples['image']]
+        # list2tensor
+        new_images=torch.stack(new_images)
+        examples['pixel_values'],examples['conditioning_pixel_values']=torch.chunk(new_images, 2, dim=1)
+        examples['pixel_values']=torch.squeeze(examples['pixel_values'], dim=1)
+        examples['conditioning_pixel_values']=torch.squeeze(examples['conditioning_pixel_values'], dim=1)
+        examples['pixel_values']=list(torch.unbind(examples['pixel_values'], dim=0))     
+        examples['conditioning_pixel_values']=list(torch.unbind(examples['conditioning_pixel_values'], dim=0))   
         return examples
 
     with accelerator.main_process_first():

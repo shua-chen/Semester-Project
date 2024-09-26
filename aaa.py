@@ -57,28 +57,8 @@ def get_lq_img(opt,dataset):
     color_jitter_prob=opt.get('color_jitter_prob')
     color_jitter_pt_prob=opt.get('color_jitter_pt_prob')
     color_jitter_shift=opt.get('color_jitter_shift', 20)
-    gray_prob=opt.get('gray_prob')
+    gray_prob=opt.get('gray_prob',None)
     color_jitter_shift /= 255.
-
-    def hq_img_transform(img):
-        trans = transforms.Compose([
-            transforms.RandomHorizontalFlip(p=0.5 if opt['use_hflip'] else 0),  
-            transforms.RandomVerticalFlip(p=0.5 if opt['use_vflip'] else 0),   
-            transforms.RandomRotation(degrees=opt.get('rotate', 0)),   
-        ])
-        img = trans(img)
-        img_gt = np.array(img).astype(np.float32)/255.0        
-        
-        h, w, _ = img_gt.shape
-        if opt.get('gt_gray'):  # whether convert GT to gray images
-            img_gt = cv2.cvtColor(img_gt, cv2.COLOR_BGR2GRAY)
-            img_gt = np.tile(img_gt[:, :, None], [1, 1, 3])  # repeat the color channels
-
-        # Convert pixel values to the range 0-255 and clip values outside this range
-        img_gt = np.clip((img_gt * 255).round(), 0, 255).astype(np.uint8)
-        # BGR to RGB, numpy to PIL Image
-        img_gt = Image.fromarray(img_gt)
-        return img_gt
         
     def degrad(img):
         trans = transforms.Compose([
@@ -86,10 +66,10 @@ def get_lq_img(opt,dataset):
             transforms.RandomVerticalFlip(p=0.5 if opt['use_vflip'] else 0),   
             transforms.RandomRotation(degrees=opt.get('rotate', 0)),   
         ])
-        img = trans(img)
+        img_gt = trans(img)
 
         # Convert image to numpy array
-        img_gt = np.array(img).astype(np.float32)/255.0        
+        img_gt = np.array(img_gt).astype(np.float32)/255.0        
         
         h, w, _ = img_gt.shape
         
@@ -103,6 +83,7 @@ def get_lq_img(opt,dataset):
             blur_sigma, [-math.pi, math.pi],
             noise_range=None)
         img_lq = cv2.filter2D(img_gt, -1, kernel)
+
         # downsample
         scale = np.random.uniform(downsample_range[0], downsample_range[1])
         img_lq = cv2.resize(img_lq, (int(w // scale), int(h // scale)), interpolation=cv2.INTER_LINEAR)
@@ -136,17 +117,45 @@ def get_lq_img(opt,dataset):
             hue = opt.get('hue', (-0.1, 0.1))
             img_lq = color_jitter_pt(img_lq, brightness, contrast, saturation, hue)
 
+        if opt.get('gt_gray'):  # whether convert GT to gray images
+            img_gt = cv2.cvtColor(img_gt, cv2.COLOR_BGR2GRAY)
+            img_gt = np.tile(img_gt[:, :, None], [1, 1, 3])  # repeat the color channels
+
+        # Convert pixel values to the range 0-255 and clip values outside this range
+        img_gt = np.clip((img_gt * 255).round(), 0, 255).astype(np.uint8)
+        # BGR to RGB, numpy to PIL Image
+        img_gt = Image.fromarray(img_gt).convert("RGB")
         # round and clip
-        img_lq = torch.clamp((img_lq * 255.0).round(), 0, 255) / 255.
+        img_lq = torch.clamp((img_lq * 255.0).round(), 0, 255)/255.0
         
         # Convert img_gt and img_lq to PIL Image format and ensure they are in RGB mode
         img_lq = transforms.ToPILImage()(img_lq).convert("RGB")
-        return img_lq
+
+        gt_transform=transforms.Compose([
+            transforms.Resize(512, interpolation=transforms.InterpolationMode.BILINEAR),
+            transforms.CenterCrop(512),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5], [0.5]),  
+        ])
+        lq_transform=transforms.Compose([
+            transforms.Resize(512, interpolation=transforms.InterpolationMode.BILINEAR),
+            transforms.CenterCrop(512),
+            transforms.ToTensor(),  
+        ])
+        img_gt=gt_transform(img_gt)
+        img_lq=lq_transform(img_lq)
+        # return shape 2*c*h*w
+        stack_imgs=torch.stack([img_gt, img_lq])
+        return stack_imgs
     def process_dataset(examples):
-        hq_images=[hq_img_transform(exam_image) for exam_image in examples['image']]
-        lq_images=[degrad(exam_image) for exam_image in examples['image']]
-        examples['image']=hq_images
-        examples['lq_image']=lq_images
+        new_images=[degrad(exam_image) for exam_image in examples['image']]
+        # list2tensor
+        new_images=torch.stack(new_images)
+        examples['image'],examples['lq_image']=torch.chunk(new_images, 2, dim=1)
+        examples['image']=torch.squeeze(examples['image'], dim=1)
+        examples['lq_image']=torch.squeeze(examples['lq_image'], dim=1)
+        examples['image']=list(torch.unbind(examples['image'], dim=0))     
+        examples['lq_image']=list(torch.unbind(examples['lq_image'], dim=0))   
         return examples
 
     dataset=dataset.with_transform(process_dataset)

@@ -2,8 +2,7 @@ import logging
 import os
 import numpy as np
 import os
-import degradations as degradations
-from utils import setup_logger
+import prepare_data.degradations as degradations
 import torch
 from torchvision.transforms.functional import (adjust_brightness, adjust_contrast, 
                                         adjust_hue, adjust_saturation, normalize)
