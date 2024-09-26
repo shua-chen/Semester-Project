@@ -1000,7 +1000,7 @@ def prepare_train_dataset(dataset, accelerator,opt):
         return stack_imgs
     
     def process_dataset(examples):
-        new_images=[degrad(exam_image) for exam_image in examples['image']]
+        new_images=[degrad(exam_image) for exam_image in examples[args.image_column]]
         # list2tensor
         new_images=torch.stack(new_images)
         examples['pixel_values'],examples['conditioning_pixel_values']=torch.chunk(new_images, 2, dim=1)
@@ -1052,7 +1052,8 @@ def main(args):
         )
 
     logging_dir = Path(args.output_dir, args.logging_dir)
-    opt=yaml.load(open(args.train_data_opt))
+    
+    opt=yaml.load(open(args.train_data_opt), Loader=yaml.FullLoader)
 
     if torch.backends.mps.is_available() and args.mixed_precision == "bf16":
         # due to pytorch#99272, MPS does not yet support bfloat16.

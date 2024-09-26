@@ -4,16 +4,17 @@ accelerate launch train_controlnext.py --pretrained_model_name_or_path "stabilit
 --use_safetensors \
 --output_dir "train/example" \
 --logging_dir "logs" \
---resolution 1024 \
+--resolution 512 \
 --gradient_checkpointing \
 --set_grads_to_none \
 --proportion_empty_prompts 0.2 \
 --controlnet_scale_factor 1.0 \
 --mixed_precision fp16 \
 --enable_xformers_memory_efficient_attention \
---dataset_name "Nahrawy/VIDIT-Depth-ControlNet" \
+--train_data_dir "/home/Code/Semester-Project/FFHQ/512" \
+--train_data_opt "/home/Code/Semester-Project/data_opt.yaml" \
 --image_column "image" \
 --conditioning_image_column "depth_map" \
 --caption_column "caption" \
---validation_prompt "a stone tower on a rocky island" \
+--validation_prompt "a high resolution human face image" \
 --validation_image "examples/vidit_depth/condition_0.png"
