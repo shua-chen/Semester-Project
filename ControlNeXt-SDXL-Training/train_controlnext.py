@@ -931,7 +931,8 @@ def prepare_train_dataset(dataset, accelerator,opt):
         lq_trans=transforms.Compose([
             transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
             transforms.CenterCrop(args.resolution),
-            transforms.ToTensor(),  
+            transforms.ToTensor(), 
+            transforms.Normalize([0.5], [0.5]),  
         ])
         img_gt = trans(img)
 
