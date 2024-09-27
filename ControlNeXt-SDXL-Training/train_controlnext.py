@@ -818,7 +818,7 @@ def get_train_dataset(args, accelerator):
             train_dataset = train_dataset.select(range(args.max_train_samples))
 
     def add_prompt_column(examples):
-        examples[args.caption_column] = [args.generate_prompt for _ in examples[args.image_column]]
+        examples[args.caption_column] = args.generate_prompt
         return examples
     train_dataset = train_dataset.map(add_prompt_column)
 
@@ -1384,6 +1384,14 @@ def main(args):
         unet, controlnet, optimizer, train_dataloader, lr_scheduler
     )
 
+    def patch_accelerator_for_fp16_training(accelerator):
+        org_unscale_grads = accelerator.scaler._unscale_grads_
+
+        def _unscale_grads_replacer(optimizer, inv_scale, found_inf, allow_fp16):
+            return org_unscale_grads(optimizer, inv_scale, found_inf, True)
+
+        accelerator.scaler._unscale_grads_ = _unscale_grads_replacer
+
     patch_accelerator_for_fp16_training(accelerator)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -1409,14 +1417,7 @@ def main(args):
         tracker_config.pop("validation_image")
 
         accelerator.init_trackers(args.tracker_project_name, config=tracker_config)
-    
-    def patch_accelerator_for_fp16_training(accelerator):
-        org_unscale_grads = accelerator.scaler._unscale_grads_
 
-        def _unscale_grads_replacer(optimizer, inv_scale, found_inf, allow_fp16):
-            return org_unscale_grads(optimizer, inv_scale, found_inf, True)
-
-        accelerator.scaler._unscale_grads_ = _unscale_grads_replacer
 
     if args.mixed_precision == "fp16":
         patch_accelerator_for_fp16_training(accelerator)
@@ -1453,7 +1454,9 @@ def main(args):
             args.resume_from_checkpoint = None
             initial_global_step = 0
         else:
+            path=os.path.join("checkpoints", path)
             accelerator.print(f"Resuming from checkpoint {path}")
+            accelerator.print(f"Loading state from {os.path.join(args.output_dir, path)}")
             accelerator.load_state(os.path.join(args.output_dir, path))
             global_step = int(path.split("-")[1])
 
