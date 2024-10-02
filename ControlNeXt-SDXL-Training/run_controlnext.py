@@ -17,8 +17,6 @@ from transformers import AutoTokenizer, PretrainedConfig
 
 def log_validation(
     vae, 
-    text_encoder, 
-    tokenizer, 
     unet, 
     controlnext, 
     args, 
@@ -28,10 +26,8 @@ def log_validation(
     pipeline = StableDiffusionXLControlNeXtPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
         vae=vae,
-        text_encoder=text_encoder,
-        tokenizer=tokenizer,
         unet=unet,
-        controlnext=controlnext,
+        controlnet=controlnext,
         safety_checker=None,
         revision=args.revision,
         variant=args.variant,
@@ -81,7 +77,11 @@ def log_validation(
         for _ in range(args.num_validation_images):
             with inference_ctx:
                 image = pipeline(
-                    prompt=validation_prompt, controlnet_image=validation_image, num_inference_steps=20, generator=generator, negative_prompt=negative_prompt
+                    prompt=validation_prompt, 
+                    controlnet_image=validation_image, 
+                    num_inference_steps=20, 
+                    generator=generator, 
+                    negative_prompt=negative_prompt,
                 ).images[0]
 
             images.append(image)
@@ -102,7 +102,8 @@ def log_validation(
         formatted_images.append(np.asarray(validation_image))
         for image in images:
             formatted_images.append(np.asarray(image))
-        formatted_images = np.concatenate(formatted_images, 1)
+        #formatted_images = np.concatenate(formatted_images, 1)
+        formatted_images=formatted_images[1]
 
         file_path = os.path.join(save_dir_path, "{}.png".format(time.time()))
         formatted_images = cv2.cvtColor(formatted_images, cv2.COLOR_BGR2RGB)
@@ -121,6 +122,13 @@ def parse_args(input_args=None):
         default=None,
         required=True,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
+    )
+    parser.add_argument(
+        "--pretrained_vae_model_name_or_path",
+        type=str,
+        default=None,
+        required=True,
+        help="Path to pretrained vae model or model identifier from huggingface.co/models.",
     )
     parser.add_argument(
         "--controlnet_model_name_or_path",
@@ -260,11 +268,11 @@ def parse_args(input_args=None):
     return args
 
 
-def import_model_class_from_model_name_or_path(pretrained_model_name_or_path: str, revision: str):
+def import_model_class_from_model_name_or_path(
+    pretrained_model_name_or_path: str, revision: str, subfolder: str = "text_encoder"
+):
     text_encoder_config = PretrainedConfig.from_pretrained(
-        pretrained_model_name_or_path,
-        subfolder="text_encoder",
-        revision=revision,
+        pretrained_model_name_or_path, subfolder=subfolder, revision=revision
     )
     model_class = text_encoder_config.architectures[0]
 
@@ -272,6 +280,10 @@ def import_model_class_from_model_name_or_path(pretrained_model_name_or_path: st
         from transformers import CLIPTextModel
 
         return CLIPTextModel
+    elif model_class == "CLIPTextModelWithProjection":
+        from transformers import CLIPTextModelWithProjection
+
+        return CLIPTextModelWithProjection
     else:
         raise ValueError(f"{model_class} is not supported.")
 
@@ -298,26 +310,34 @@ if __name__ == "__main__":
     args = parse_args()
 
     vae = AutoencoderKL.from_pretrained(
-        args.pretrained_model_name_or_path, 
-        subfolder="vae", 
-        revision=args.revision, 
-        variant=args.variant
+        args.pretrained_vae_model_name_or_path,
+        subfolder="vae" if args.pretrained_vae_model_name_or_path is None else None,
+        revision=args.revision if args.pretrained_vae_model_name_or_path is None else None,
+        variant=args.variant if args.pretrained_vae_model_name_or_path is None else None,
     )
 
-    text_encoder_cls = import_model_class_from_model_name_or_path(
-        args.pretrained_model_name_or_path, 
-        args.revision
+    text_encoder_cls_one = import_model_class_from_model_name_or_path(
+        args.pretrained_model_name_or_path, args.revision
     )
-    text_encoder = text_encoder_cls.from_pretrained(
-        args.pretrained_model_name_or_path, 
-        subfolder="text_encoder", 
-        revision=args.revision, 
-        variant=args.variant
+    text_encoder_cls_two = import_model_class_from_model_name_or_path(
+        args.pretrained_model_name_or_path, args.revision, subfolder="text_encoder_2"
+    )
+    text_encoder_one = text_encoder_cls_one.from_pretrained(
+        args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, variant=args.variant
+    )
+    text_encoder_two = text_encoder_cls_two.from_pretrained(
+        args.pretrained_model_name_or_path, subfolder="text_encoder_2", revision=args.revision, variant=args.variant
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(
+    tokenizer_one = AutoTokenizer.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="tokenizer",
+        revision=args.revision,
+        use_fast=False,
+    )
+    tokenizer_two = AutoTokenizer.from_pretrained(
+        args.pretrained_model_name_or_path,
+        subfolder="tokenizer_2",
         revision=args.revision,
         use_fast=False,
     )
@@ -342,8 +362,6 @@ if __name__ == "__main__":
 
     log_validation(
         vae=vae, 
-        text_encoder=text_encoder, 
-        tokenizer=tokenizer, 
         unet=unet, 
         controlnext=controlnext, 
         args=args, 
