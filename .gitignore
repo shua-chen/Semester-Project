@@ -1,3 +1,5 @@
 FFHQ/
 logs/
 __pycache__/
+/train
+/test
