@@ -87,6 +87,7 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
         variant=args.variant,
         torch_dtype=weight_dtype,
     )
+    pipeline.torch_dtype=weight_dtype
 
     pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
     pipeline = pipeline.to(accelerator.device)
@@ -469,7 +470,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--learning_rate_controlnet",
         type=float,
-        default=1e-4,
+        default=5e-5,
         help="Initial learning rate (after the potential warmup period) to use for the controlnet.",
     )
     parser.add_argument(
@@ -910,10 +911,10 @@ def prepare_train_dataset(dataset, accelerator,opt):
     downsample_range=opt['downsample_range']
     noise_range=opt['noise_range']
     jpeg_range=opt['jpeg_range']
-    color_jitter_prob=opt.get('color_jitter_prob')
-    color_jitter_pt_prob=opt.get('color_jitter_pt_prob')
-    color_jitter_shift=opt.get('color_jitter_shift', 20)
-    gray_prob=opt.get('gray_prob')
+    color_jitter_prob=opt.get('color_jitter_prob',None)
+    color_jitter_pt_prob=opt.get('color_jitter_pt_prob',None)
+    color_jitter_shift=opt.get('color_jitter_shift', None)
+    gray_prob=opt.get('gray_prob', None)
     color_jitter_shift /= 255.
       
     def degrad(img):
@@ -972,8 +973,8 @@ def prepare_train_dataset(dataset, accelerator,opt):
             img_lq = np.tile(img_lq[:, :, None], [1, 1, 3])
             
 
-        # BGR to RGB, HWC to CHW, numpy to tensor
-        img_lq = torch.from_numpy(img_lq).permute(2, 0, 1).float()
+        # numpy to tensor
+        #img_lq = torch.from_numpy(img_lq).permute(2, 0, 1).float()
 
         # random color jitter (pytorch version) (only for lq)
         if color_jitter_pt_prob is not None and (np.random.uniform() < color_jitter_pt_prob):
@@ -989,10 +990,12 @@ def prepare_train_dataset(dataset, accelerator,opt):
         img_gt = Image.fromarray(img_gt).convert("RGB")
 
         # round and clip
-        img_lq = torch.clamp((img_lq * 255.0).round(), 0, 255) / 255.
-        
+        #img_lq = torch.clamp((img_lq * 255.0).round(), 0, 255) / 255.
+        #img_lq = transforms.ToPILImage()(img_lq).convert("RGB")
+        img_lq = np.clip((img_lq * 255).round(), 0, 255).astype(np.uint8)
+        img_lq = Image.fromarray(img_lq).convert("RGB")
         # Convert img_gt and img_lq to PIL Image format and ensure they are in RGB mode
-        img_lq = transforms.ToPILImage()(img_lq).convert("RGB")
+        
         img_gt=gt_trans(img_gt)
         img_lq=lq_trans(img_lq)
         # return shape 2*c*h*w
@@ -1501,9 +1504,16 @@ def main(args):
                 noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
                 # ControlNet conditioning.
-                controlnet_image = batch["conditioning_pixel_values"].to(accelerator.device, dtype=controlnet.dtype)
+                if args.pretrained_vae_model_name_or_path is not None:
+                    controlnet_image = batch["conditioning_pixel_values"].to(accelerator.device, dtype=weight_dtype)
+                else:
+                    controlnet_image = batch["conditioning_pixel_values"].to(accelerator.device)
+                controlnet_latents=vae.encode(controlnet_image).latent_dist.sample()
+                controlnet_latents = controlnet_latents * vae.config.scaling_factor
+                if args.pretrained_vae_model_name_or_path is None:
+                    controlnet_latents = controlnet_latents.to(weight_dtype)
                 controls = controlnet(
-                    controlnet_image,
+                    controlnet_latents,
                     timesteps,
                 )
                 controls['scale'] *= args.controlnet_scale_factor

@@ -54,11 +54,12 @@ def get_lq_img(opt,dataset):
     downsample_range=opt['downsample_range']
     noise_range=opt['noise_range']
     jpeg_range=opt['jpeg_range']
-    color_jitter_prob=opt.get('color_jitter_prob')
-    color_jitter_pt_prob=opt.get('color_jitter_pt_prob')
-    color_jitter_shift=opt.get('color_jitter_shift', 20)
+    color_jitter_prob=opt.get('color_jitter_prob',None)
+    color_jitter_pt_prob=opt.get('color_jitter_pt_prob',None)
+    color_jitter_shift=opt.get('color_jitter_shift',None)
     gray_prob=opt.get('gray_prob',None)
-    color_jitter_shift /= 255.
+    if color_jitter_shift is not None:
+        color_jitter_shift /= 255.
         
     def degrad(img):
         trans = transforms.Compose([
@@ -107,7 +108,7 @@ def get_lq_img(opt,dataset):
             
 
         # BGR to RGB, HWC to CHW, numpy to tensor
-        img_lq = torch.from_numpy(img_lq).permute(2, 0, 1).float()
+        #img_lq = torch.from_numpy(img_lq).permute(2, 0, 1).float()
 
         # random color jitter (pytorch version) (only for lq)
         if color_jitter_pt_prob is not None and (np.random.uniform() < color_jitter_pt_prob):
@@ -126,10 +127,12 @@ def get_lq_img(opt,dataset):
         # BGR to RGB, numpy to PIL Image
         img_gt = Image.fromarray(img_gt).convert("RGB")
         # round and clip
-        img_lq = torch.clamp((img_lq * 255.0).round(), 0, 255)/255.0
-        
+        #img_lq = torch.clamp((img_lq * 255.0).round(), 0, 255)/255.0
+        #img_lq = transforms.ToPILImage()(img_lq).convert("RGB")
+        img_lq = np.clip((img_lq * 255).round(), 0, 255).astype(np.uint8)
+        img_lq = Image.fromarray(img_lq).convert("RGB")
         # Convert img_gt and img_lq to PIL Image format and ensure they are in RGB mode
-        img_lq = transforms.ToPILImage()(img_lq).convert("RGB")
+        
 
         gt_transform=transforms.Compose([
             transforms.Resize(512, interpolation=transforms.InterpolationMode.BILINEAR),

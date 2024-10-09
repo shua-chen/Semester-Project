@@ -20,7 +20,7 @@ def log_validation(
     unet, 
     controlnext, 
     args, 
-    device='cpu'
+    device='cuda'
 ):
 
     pipeline = StableDiffusionXLControlNeXtPipeline.from_pretrained(
@@ -31,6 +31,7 @@ def log_validation(
         safety_checker=None,
         revision=args.revision,
         variant=args.variant,
+        torch_dtype=torch.float32,
     )
     pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
     pipeline = pipeline.to(device)
@@ -79,9 +80,11 @@ def log_validation(
                 image = pipeline(
                     prompt=validation_prompt, 
                     controlnet_image=validation_image, 
-                    num_inference_steps=20, 
+                    num_inference_steps=50, 
                     generator=generator, 
                     negative_prompt=negative_prompt,
+                    height=args.resolution,
+                    width=args.resolution,
                 ).images[0]
 
             images.append(image)
@@ -102,8 +105,8 @@ def log_validation(
         formatted_images.append(np.asarray(validation_image))
         for image in images:
             formatted_images.append(np.asarray(image))
-        #formatted_images = np.concatenate(formatted_images, 1)
-        formatted_images=formatted_images[1]
+        formatted_images = np.concatenate(formatted_images, 1)
+        #formatted_images=formatted_images[1]
 
         file_path = os.path.join(save_dir_path, "{}.png".format(time.time()))
         formatted_images = cv2.cvtColor(formatted_images, cv2.COLOR_BGR2RGB)
@@ -308,6 +311,7 @@ def load_safetensors(model, safetensors_path, strict=True, load_weight_increasem
 
 if __name__ == "__main__":
     args = parse_args()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     vae = AutoencoderKL.from_pretrained(
         args.pretrained_vae_model_name_or_path,
@@ -359,6 +363,11 @@ if __name__ == "__main__":
     if args.unet_model_name_or_path is not None:
         load_safetensors(unet, args.unet_model_name_or_path, strict=False, load_weight_increasement=args.save_load_weights_increaments)
 
+    vae.to(device)
+    text_encoder_one.to(device)
+    text_encoder_two.to(device)
+    controlnext.to(device)
+    unet.to(device)
 
     log_validation(
         vae=vae, 

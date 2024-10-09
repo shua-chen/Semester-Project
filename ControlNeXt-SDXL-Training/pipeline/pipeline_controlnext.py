@@ -390,7 +390,7 @@ class StableDiffusionXLControlNeXtPipeline(
         self.control_image_processor = VaeImageProcessor(
             vae_scale_factor=self.vae_scale_factor, do_convert_rgb=True, do_normalize=False
         )
-
+        self.torch_dtype=torch.float32
         self.default_sample_size = self.unet.config.sample_size
 
         add_watermarker = add_watermarker if add_watermarker is not None else is_invisible_watermark_available()
@@ -562,7 +562,8 @@ class StableDiffusionXLControlNeXtPipeline(
         do_classifier_free_guidance=False,
         guess_mode=False,
     ):
-        image = self.control_image_processor.preprocess(image, height=height, width=width).to(dtype=torch.float32)
+        image = self.control_image_processor.preprocess(image, height=height, width=width).to(device=device,dtype=self.torch_dtype)
+        image=self.vae.encode(image).latent_dist.sample()
         image_batch_size = image.shape[0]
 
         if image_batch_size == 1:
@@ -573,7 +574,7 @@ class StableDiffusionXLControlNeXtPipeline(
 
         image = image.repeat_interleave(repeat_by, dim=0)
 
-        image = image.to(device=device, dtype=dtype)
+        image = image.to(dtype=dtype)
 
         if do_classifier_free_guidance and not guess_mode:
             image = torch.cat([image] * 2)
