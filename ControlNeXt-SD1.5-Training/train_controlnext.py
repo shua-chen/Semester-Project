@@ -26,6 +26,7 @@ import cv2
 import json
 import time
 import yaml
+import re
 
 import datasets
 import numpy as np
@@ -53,7 +54,7 @@ from diffusers import (
     UniPCMultistepScheduler,
 )
 from diffusers.optimization import get_scheduler
-from diffusers.utils import check_min_version, is_wandb_available
+from diffusers.utils import check_min_version, is_wandb_available, make_image_grid
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
@@ -158,28 +159,37 @@ def log_validation(
     save_dir_path = os.path.join(args.output_dir, "eval_img")
     if not os.path.exists(save_dir_path):
         os.makedirs(save_dir_path)
+    sample_dir = os.path.join(save_dir_path, f"sample-{step}")
+    os.makedirs(sample_dir, exist_ok=True)
     for tracker in accelerator.trackers:
+        formatted_images = []
         for log in image_logs:
             images = log["images"]
             validation_prompt = log["validation_prompt"]
             validation_image = log["validation_image"]
 
-            formatted_images = []
-            formatted_images.append(np.asarray(validation_image))
+            formatted_images.append(wandb.Image(validation_image, caption="Controlnext conditioning"))
+
             for image in images:
-                formatted_images.append(np.asarray(image))
-            formatted_images = np.concatenate(formatted_images, 1)
+                image = wandb.Image(image, caption=validation_prompt)
+                formatted_images.append(image)
 
-            file_path = os.path.join(save_dir_path, "{}_{}_{}.png".format(step, time.time(), validation_prompt.replace(" ", "-")))
-            formatted_images = cv2.cvtColor(formatted_images, cv2.COLOR_BGR2RGB)
-            print("Save images to:", file_path)
-            cv2.imwrite(file_path, formatted_images)
+        tracker.log({tracker_key: formatted_images})
 
-        del pipeline
-        gc.collect()
-        torch.cuda.empty_cache()
+    formatted_images = []
+    formatted_images.append(validation_image)
+    for i, image in enumerate(images):
+        formatted_images.append(image)
+        image.save(os.path.join(sample_dir, f"image-{i}_{step}.png"))
+    image_grid = make_image_grid(formatted_images, 1, len(formatted_images))
+    image_grid.save(os.path.join(sample_dir, f"grid_{step}.png"))
+    logger.info(f"{len(formatted_images)} validation images saved to {sample_dir}")
 
-        return image_logs
+    del pipeline
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return image_logs
 
 
 def import_model_class_from_model_name_or_path(pretrained_model_name_or_path: str, revision: str):
@@ -282,6 +292,12 @@ def parse_args(input_args=None):
         type=str,
         default=None,
         help="Pretrained tokenizer name or path if not the same as model_name",
+    )
+    parser.add_argument(
+        "--unet_trainable_param_pattern",
+        type=str,
+        default=r".*attn2.*to_out.*",
+        help="Regex pattern to match the name of trainable parameters of the UNet.",
     )
     parser.add_argument(
         "--output_dir",
@@ -1003,19 +1019,22 @@ def main(args):
         "lr": args.learning_rate * 10
     }]
 
+    unet.requires_grad_(True)
     pretrained_trainable_params = {}
-
+    unet_params=[]
+    pattern = re.compile(args.unet_trainable_param_pattern)
     for name, para in unet.named_parameters():
-        if "to_out" in name:
+        if pattern.match(name):
             para.requires_grad = True
+            unet_params.append(para)
             para.data = para.to(torch.float32)
-            params_to_optimize.append({
-                "params": para
-            })
+            # params_to_optimize.append({
+            #     "params": para
+            # })
             pretrained_trainable_params[name] = para.detach().cpu()
         else:
             para.requires_grad = False
-
+    params_to_optimize.append({'params': unet_params, 'lr': args.learning_rate})
     optimizer = optimizer_class(
         params_to_optimize,
         lr=args.learning_rate,
@@ -1170,8 +1189,10 @@ def main(args):
                 encoder_hidden_states = text_encoder(batch["input_ids"], return_dict=False)[0]
 
                 controlnext_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype)
+                # tensor img to PIL img
                 controlnext_latents=vae.encode(controlnext_image).latent_dist.sample()
                 controlnext_latents = controlnext_latents * vae.config.scaling_factor
+
 
                 controlnext_output = controlnext(controlnext_latents, timesteps)
 
@@ -1191,12 +1212,15 @@ def main(args):
                     target = noise_scheduler.get_velocity(latents, noise, timesteps)
                 else:
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+
                 loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    params_to_clip = controlnext.parameters()
-                    # accelerator.clip_grad_norm_(params_to_optimize, args.max_grad_norm)
+                    params_to_clip = []
+                    for p in params_to_optimize:
+                        params_to_clip.extend(p["params"])
+                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=args.set_grads_to_none)

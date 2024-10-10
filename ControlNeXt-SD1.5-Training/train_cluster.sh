@@ -9,7 +9,6 @@ accelerate launch train_controlnext.py --pretrained_model_name_or_path "runwayml
 --set_grads_to_none \
 --proportion_empty_prompts 0.2 \
 --controlnext_scale 1.0 \
---mixed_precision fp16 \
 --enable_xformers_memory_efficient_attention \
 --train_data_dir "/scratch/students/2024-fall-shuhua/mydataset/FFHQ/512" \
 --train_data_opt "/scratch/students/2024-fall-shuhua/code/Semester-Project/data_opt.yaml" \
@@ -21,5 +20,5 @@ accelerate launch train_controlnext.py --pretrained_model_name_or_path "runwayml
 --validation_steps 100 \
 --num_train_epochs 15 \
 --train_batch_size 24 \
---report_to "wandb" \
---save_load_weights_increaments 
+--save_load_weights_increaments \
+--report_to "wandb" 

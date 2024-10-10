@@ -1171,7 +1171,8 @@ class UNet2DConditionModel(
 
         # 2. pre-process
         sample = self.conv_in(sample)
-
+       
+        '''之前部分没有问题'''
         # 2.5 GLIGEN position net
         if cross_attention_kwargs is not None and cross_attention_kwargs.get("gligen", None) is not None:
             cross_attention_kwargs = cross_attention_kwargs.copy()
@@ -1192,6 +1193,7 @@ class UNet2DConditionModel(
             scale_lora_layers(self, lora_scale)
 
         is_controlnet = mid_block_additional_residual is not None and down_block_additional_residuals is not None
+        is_controlnext = conditional_controls is not None
         # using new arg down_intrablock_additional_residuals for T2I-Adapters, to distinguish from controlnets
         is_adapter = down_intrablock_additional_residuals is not None
         # maintain backward compatibility for legacy usage, where
@@ -1230,19 +1232,17 @@ class UNet2DConditionModel(
                 sample, res_samples = downsample_block(hidden_states=sample, temb=emb)
                 if is_adapter and len(down_intrablock_additional_residuals) > 0:
                     sample += down_intrablock_additional_residuals.pop(0)
-
             down_block_res_samples += res_samples
 
             if down_idx == 0 and conditional_controls is not None:
                 scale = conditional_controls['scale']
                 conditional_controls = conditional_controls['output']
                 conditional_controls=nn.functional.adaptive_avg_pool2d(conditional_controls, sample.shape[-2:])
-                conditional_controls = conditional_controls.to(sample)                
+                conditional_controls = conditional_controls.to(sample)           
                 mean_latents, std_latents = torch.mean(sample, dim=(1, 2, 3), keepdim=True), torch.std(sample, dim=(1, 2, 3), keepdim=True)
                 mean_control, std_control = torch.mean(conditional_controls, dim=(1, 2, 3), keepdim=True), torch.std(conditional_controls, dim=(1, 2, 3), keepdim=True)
                 conditional_controls = (conditional_controls - mean_control) * (std_latents / (std_control + 1e-12)) + mean_latents
                 sample = sample + conditional_controls * scale
-
 
         # 4. mid
         if self.mid_block is not None:
@@ -1265,7 +1265,6 @@ class UNet2DConditionModel(
                 and sample.shape == down_intrablock_additional_residuals[0].shape
             ):
                 sample += down_intrablock_additional_residuals.pop(0)
-
 
         # 5. up
         for i, upsample_block in enumerate(self.up_blocks):
