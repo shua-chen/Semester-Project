@@ -26,7 +26,7 @@ class ControlNeXtModel(ModelMixin, ConfigMixin):
         self.time_proj = Timesteps(128, True, downscale_freq_shift=0)
         self.time_embedding = TimestepEmbedding(128, time_embed_dim)
         self.embedding = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=3, padding=1),
+            nn.Conv2d(4, 64, kernel_size=3, padding=1),
             nn.GroupNorm(2, 64),
             nn.ReLU(),
             # nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
