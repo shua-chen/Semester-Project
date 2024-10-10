@@ -7,7 +7,6 @@ import os
 from PIL import Image
 import degradations as degradations
 from utils import setup_logger
-from datasets import Dataset, DatasetDict
 import torch
 import torch.utils.data as data
 from torchvision import transforms
@@ -51,7 +50,7 @@ class FFHQDegraDataset(data.Dataset):
         # to gray
         self.gray_prob = opt.get('gray_prob')
 
-        logger_folder = opt.get('log_folder', './logs')
+        logger_folder = opt.get('logger_folder', './logs')
         logger = setup_logger(log_file=osp.join(logger_folder, 'data_preparation.log'))
         logger.info(f'Blur: blur_kernel_size {self.blur_kernel_size}, sigma: [{", ".join(map(str, self.blur_sigma))}]')
         logger.info(f'Downsample: downsample_range [{", ".join(map(str, self.downsample_range))}]')
@@ -159,139 +158,3 @@ class FFHQDegraDataset(data.Dataset):
         img_lq = torch.clamp((img_lq * 255.0).round(), 0, 255) / 255.
         
         return {'lq': img_lq, 'gt': img_gt, 'gt_path': img_path}
-
-def color_jitter_pt(img, brightness, contrast, saturation, hue):
-    """jitter color: randomly jitter the brightness, contrast, saturation, and hue, in PIL Image formats"""
-    img = transforms.ToTensor()(img)  # Convert PIL image to tensor
-    fn_idx = torch.randperm(4)
-    for fn_id in fn_idx:
-        if fn_id == 0 and brightness is not None:
-            brightness_factor = torch.tensor(1.0).uniform_(brightness[0], brightness[1]).item()
-            img = adjust_brightness(img, brightness_factor)
-
-        if fn_id == 1 and contrast is not None:
-            contrast_factor = torch.tensor(1.0).uniform_(contrast[0], contrast[1]).item()
-            img = adjust_contrast(img, contrast_factor)
-
-        if fn_id == 2 and saturation is not None:
-            saturation_factor = torch.tensor(1.0).uniform_(saturation[0], saturation[1]).item()
-            img = adjust_saturation(img, saturation_factor)
-
-        if fn_id == 3 and hue is not None:
-            hue_factor = torch.tensor(1.0).uniform_(hue[0], hue[1]).item()
-            img = adjust_hue(img, hue_factor)
-    img = transforms.ToPILImage()(img)  # Convert tensor back to PIL image
-    return img
-
-def create_dataset(opt,is_huggingface=False):
-    if not is_huggingface:
-        print('Creating PyTorch dataset...')
-        dataset = FFHQDegraDataset(opt)
-    else:
-        print('Creating Hugging Face dataset...')
-        image_folder = opt['image_folder']
-        image_paths = []
-        for root, _, files in os.walk(image_folder):
-            for file in files:
-                if file.endswith(('png', 'jpg', 'jpeg')):
-                    image_paths.append(osp.join(root, file))
-
-        # Data augmentation
-        transform = transforms.Compose([
-            transforms.RandomHorizontalFlip(p=0.5 if opt['use_hflip'] else 0),  
-            transforms.RandomVerticalFlip(p=0.5 if opt['use_vflip'] else 0),   
-            transforms.RandomRotation(degrees=opt.get('rotate', 0)),   
-        ])
-
-        mean = opt['mean']
-        std = opt['std']
-        out_size = opt['out_size']
-
-        # Degradation configurations
-        blur_kernel_size = opt['blur_kernel_size']
-        kernel_list = opt['kernel_list']
-        kernel_prob = opt['kernel_prob']
-        blur_sigma = opt['blur_sigma']
-        downsample_range = opt['downsample_range']
-        noise_range = opt['noise_range']
-        jpeg_range = opt['jpeg_range']
-
-        # Color jitter
-        color_jitter_prob = opt.get('color_jitter_prob')
-        color_jitter_pt_prob = opt.get('color_jitter_pt_prob')
-        color_jitter_shift = opt.get('color_jitter_shift', 20) / 255.0
-        gray_prob = opt.get('gray_prob')
-
-        logger_folder = opt.get('log_folder', './logs')
-        logger = setup_logger(log_file=osp.join(logger_folder, 'data_preparation.log'))
-        logger.info(f'Blur: blur_kernel_size {blur_kernel_size}, sigma: [{", ".join(map(str, blur_sigma))}]')
-        logger.info(f'Downsample: downsample_range [{", ".join(map(str, downsample_range))}]')
-        logger.info(f'Noise: [{", ".join(map(str, noise_range))}]')
-        logger.info(f'JPEG compression: [{", ".join(map(str, jpeg_range))}]')
-
-        if color_jitter_prob is not None:
-            logger.info(f'Use random color jitter. Prob: {color_jitter_prob}, shift: {color_jitter_shift}')
-        if gray_prob is not None:
-            logger.info(f'Use random gray. Prob: {gray_prob}')
-
-        # Iterate through each image path
-        for img_path in image_paths:
-            img = Image.open(img_path).convert('RGB')
-            img = transform(img)
-
-            # Convert image to numpy array
-            img_gt = np.array(img).astype(np.float32) / 255.0
-            h, w, _ = img_gt.shape
-            
-            # Generate low-quality (lq) image
-            kernel = degradations.random_mixed_kernels(
-                kernel_list,
-                kernel_prob,
-                blur_kernel_size,
-                blur_sigma,
-                blur_sigma, [-math.pi, math.pi],
-                noise_range=None
-            )
-            img_lq = cv2.filter2D(img_gt, -1, kernel)
-            scale = np.random.uniform(downsample_range[0], downsample_range[1])
-            img_lq = cv2.resize(img_lq, (int(w // scale), int(h // scale)), interpolation=cv2.INTER_LINEAR)
-            
-            if noise_range is not None:
-                img_lq = degradations.random_add_gaussian_noise(img_lq, noise_range)
-            if jpeg_range is not None:
-                img_lq = degradations.random_add_jpg_compression(img_lq, jpeg_range)
-            
-            img_lq = cv2.resize(img_lq, (w, h), interpolation=cv2.INTER_LINEAR)
-            
-            # Random color jitter (only for lq)
-            if color_jitter_prob is not None and (np.random.uniform() < color_jitter_prob):
-                img_lq = FFHQDegraDataset.color_jitter(img_lq, color_jitter_shift)
-
-            if gray_prob is not None and np.random.uniform() < gray_prob:
-                img_lq = cv2.cvtColor(img_lq, cv2.COLOR_BGR2GRAY)
-                img_lq = np.tile(img_lq[:, :, None], [1, 1, 3])
-                if opt.get('gt_gray'):
-                    img_gt = cv2.cvtColor(img_gt, cv2.COLOR_BGR2GRAY)
-                    img_gt = np.tile(img_gt[:, :, None], [1, 1, 3])
-            
-            # BGR to RGB, HWC to CHW, numpy to tensor
-            # Convert numpy arrays to PIL Images
-            img_gt = Image.fromarray((img_gt * 255).astype(np.uint8), mode='RGB')
-            img_lq = Image.fromarray((img_lq * 255).astype(np.uint8), mode='RGB')
-            if color_jitter_pt_prob is not None and (np.random.uniform() < color_jitter_pt_prob):
-                brightness = opt.get('brightness', (0.5, 1.5))
-                contrast = opt.get('contrast', (0.5, 1.5))
-                saturation = opt.get('saturation', (0, 1.5))
-                hue = opt.get('hue', (-0.1, 0.1))
-                img_lq = color_jitter_pt(img_lq, brightness, contrast, saturation, hue)
-            
-            yield {'control_img': img_lq, 'groud_truth_img': img_gt.numpy(), 'gt_path': img_path}
-
-def hug_dataset(opt):
-    data_samples = list(create_dataset(opt, is_huggingface=True))
-    hf_dataset = Dataset.from_dict({
-        'control_img': [sample['control_img'] for sample in data_samples],
-        'groud_truth_img': [sample['groud_truth_img'] for sample in data_samples],
-        'gt_path': [sample['gt_path'] for sample in data_samples]
-    })
-    return hf_dataset

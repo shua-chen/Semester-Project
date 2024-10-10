@@ -15,6 +15,7 @@
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import torch
+from torchvision import transforms
 from transformers import (
     CLIPImageProcessor,
     CLIPTextModel,
@@ -563,6 +564,9 @@ class StableDiffusionXLControlNeXtPipeline(
         guess_mode=False,
     ):
         image = self.control_image_processor.preprocess(image, height=height, width=width).to(device=device,dtype=self.torch_dtype)
+        # normalize to [-1, 1]
+        transform=transforms.Compose([transforms.Normalize([0.5], [0.5]),])
+        image=transform(image)
         image=self.vae.encode(image).latent_dist.sample()
         image_batch_size = image.shape[0]
 

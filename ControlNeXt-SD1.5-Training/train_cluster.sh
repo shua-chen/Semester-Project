@@ -1,0 +1,26 @@
+accelerate launch train_controlnext.py --pretrained_model_name_or_path "runwayml/stable-diffusion-v1-5" \
+--variant fp16 \
+--use_safetensors \
+--output_dir "train1/example" \
+--logging_dir "logs" \
+--resolution 512 \
+--learning_rate 1e-5 \
+--checkpoints_total_limit 10 \
+--gradient_checkpointing \
+--set_grads_to_none \
+--proportion_empty_prompts 0.2 \
+--controlnet_scale_factor 1.0 \
+--mixed_precision fp16 \
+--enable_xformers_memory_efficient_attention \
+--train_data_dir "/scratch/students/2024-fall-shuhua/mydataset/FFHQ/512" \
+--train_data_opt "/scratch/students/2024-fall-shuhua/code/Semester-Project/data_opt.yaml" \
+--image_column "image" \
+--conditioning_image_column "depth_map" \
+--caption_column "caption" \
+--validation_prompt "a high resolution human face image" \
+--validation_image "examples/vidit_depth/condition_0.png" \
+--validation_steps 100 \
+--num_train_epochs 15 \
+--train_batch_size "24" \
+--report_to "wandb" \
+--save_load_weights_increaments 

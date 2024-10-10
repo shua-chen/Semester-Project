@@ -338,9 +338,9 @@ class ControlNetModel(ModelMixin, ConfigMixin):
     @register_to_config
     def __init__(
         self,
-        in_channels: List[int] = [128, 128],
-        out_channels: List[int] = [128, 256],
-        groups: List[int] = [4, 8],
+        in_channels: List[int] = [64],
+        out_channels: List[int] = [256],
+        groups: List[int] = [8],
         time_embed_dim: int = 256,
         final_out_channels: int = 320,
     ):
@@ -350,15 +350,15 @@ class ControlNetModel(ModelMixin, ConfigMixin):
         self.time_embedding = TimestepEmbedding(128, time_embed_dim)
 
         self.embedding = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(4, 64, kernel_size=3, padding=1),
             nn.GroupNorm(2, 64),
             nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.GroupNorm(2, 64),
-            nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.GroupNorm(2, 128),
-            nn.ReLU(),
+            # nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            # nn.GroupNorm(2, 64),
+            # nn.ReLU(),
+            # nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            # nn.GroupNorm(2, 128),
+            # nn.ReLU(),
         )
 
         self.down_res = nn.ModuleList()
@@ -480,7 +480,7 @@ class ControlNetModel(ModelMixin, ConfigMixin):
         sample = self.embedding(sample)
         for res, downsample in zip(self.down_res, self.down_sample):
             sample = res(sample, emb)
-            sample = downsample(sample, emb)
+            #sample = downsample(sample, emb)
         sample = self.mid_convs[0](sample) + sample
         sample = self.mid_convs[1](sample)
         return {
