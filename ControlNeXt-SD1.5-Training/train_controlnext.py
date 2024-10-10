@@ -43,8 +43,8 @@ from PIL import Image
 from torchvision import transforms
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, PretrainedConfig
-from ..prepare_data.utils import color_jitter, color_jitter_pt
-from ..prepare_data import degradations
+from prepare_data.utils import color_jitter, color_jitter_pt
+from prepare_data import degradations
 
 import diffusers
 from diffusers import (
