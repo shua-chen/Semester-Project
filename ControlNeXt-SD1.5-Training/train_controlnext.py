@@ -648,7 +648,7 @@ def make_train_dataset(args, tokenizer, accelerator):
         if args.train_data_dir is not None:
             dataset = load_dataset(
                 "imagefolder",
-                args.train_data_dir,
+                data_dir=args.train_data_dir,
                 drop_labels=True
             )
         # See more about loading custom images at
