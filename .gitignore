@@ -3,3 +3,6 @@ logs/
 __pycache__/
 /train
 /test
+/prepare_data
+/aaa.py
+/csh.ipynb

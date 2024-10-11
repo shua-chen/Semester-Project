@@ -1070,11 +1070,6 @@ def main(args):
         power=args.lr_power,
     )
 
-    # Prepare everything with our `accelerator`.
-    controlnext, unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        controlnext, unet, optimizer, train_dataloader, lr_scheduler
-    )
-
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
     # as these models are only used for inference, keeping weights in full precision is not required.
     weight_dtype = torch.float32
@@ -1084,9 +1079,26 @@ def main(args):
         weight_dtype = torch.bfloat16
 
     # Move vae, unet and text_encoder to device and cast to weight_dtype
-    vae.to(accelerator.device, dtype=weight_dtype)
+    vae.to(accelerator.device, dtype=torch.float32)
     unet.to(accelerator.device, dtype=weight_dtype)
+    controlnext.to(accelerator.device, dtype=torch.float32)
     text_encoder.to(accelerator.device, dtype=weight_dtype)
+
+    # Prepare everything with our `accelerator`.
+    controlnext, unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        controlnext, unet, optimizer, train_dataloader, lr_scheduler
+    )
+
+    def patch_accelerator_for_fp16_training(accelerator):
+        org_unscale_grads = accelerator.scaler._unscale_grads_
+
+        def _unscale_grads_replacer(optimizer, inv_scale, found_inf, allow_fp16):
+            return org_unscale_grads(optimizer, inv_scale, found_inf, True)
+
+        accelerator.scaler._unscale_grads_ = _unscale_grads_replacer
+
+    if args.mixed_precision == "fp16":
+        patch_accelerator_for_fp16_training(accelerator)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1105,15 +1117,7 @@ def main(args):
         tracker_config.pop("validation_image")
 
         accelerator.init_trackers(args.tracker_project_name, config=tracker_config)
-
-    def patch_accelerator_for_fp16_training(accelerator):
-        org_unscale_grads = accelerator.scaler._unscale_grads_
-
-        def _unscale_grads_replacer(optimizer, inv_scale, found_inf, allow_fp16):
-            return org_unscale_grads(optimizer, inv_scale, found_inf, True)
-
-        accelerator.scaler._unscale_grads_ = _unscale_grads_replacer
-
+  
     if args.mixed_precision == "fp16":
         patch_accelerator_for_fp16_training(accelerator)
 
@@ -1170,9 +1174,11 @@ def main(args):
     for epoch in range(first_epoch, args.num_train_epochs):
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(controlnext, unet):
+                pixel_values = batch["pixel_values"].to(accelerator.device)
                 # Convert images to latent space
-                latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
+                latents = vae.encode(pixel_values).latent_dist.sample()
                 latents = latents * vae.config.scaling_factor
+                latents=latents.to(dtype=weight_dtype)
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
@@ -1188,22 +1194,24 @@ def main(args):
                 # Get the text embedding for conditioning
                 encoder_hidden_states = text_encoder(batch["input_ids"], return_dict=False)[0]
 
-                controlnext_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype)
+                controlnext_image = batch["conditioning_pixel_values"].to(accelerator.device)
                 # tensor img to PIL img
                 controlnext_latents=vae.encode(controlnext_image).latent_dist.sample()
                 controlnext_latents = controlnext_latents * vae.config.scaling_factor
+                controlnext_latents=controlnext_latents.to(dtype=weight_dtype)
 
 
                 controlnext_output = controlnext(controlnext_latents, timesteps)
 
                 # Predict the noise residual
-                model_pred = unet(
+                with accelerator.autocast():
+                    model_pred = unet(
                     noisy_latents,
                     timesteps,
                     encoder_hidden_states=encoder_hidden_states,
                     conditional_controls=controlnext_output,
                     return_dict=False,
-                )[0]
+                    )[0]
 
                 # Get the target for loss depending on the prediction type
                 if noise_scheduler.config.prediction_type == "epsilon":
@@ -1296,6 +1304,7 @@ def main(args):
                         )
 
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            #print(f"loss: {loss.detach().item()}")
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
 

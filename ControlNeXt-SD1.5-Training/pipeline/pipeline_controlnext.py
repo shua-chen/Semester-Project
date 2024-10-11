@@ -136,6 +136,7 @@ class StableDiffusionControlNeXtPipeline(
         self.control_image_processor = VaeImageProcessor(
             vae_scale_factor=self.vae_scale_factor, do_convert_rgb=True, do_normalize=False
         )
+        self.default_sample_size = self.unet.config.sample_size
         self.register_to_config(requires_safety_checker=requires_safety_checker)
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.enable_vae_slicing
@@ -829,6 +830,9 @@ class StableDiffusionControlNeXtPipeline(
             )
 
         controlnext = self.controlnext
+        # 0. Default height and width to unet
+        height = height or self.default_sample_size * self.vae_scale_factor
+        width = width or self.default_sample_size * self.vae_scale_factor
 
         # 1. Check inputs. Raise error if not correct
         self.check_inputs(
@@ -900,7 +904,7 @@ class StableDiffusionControlNeXtPipeline(
                 do_classifier_free_guidance=self.do_classifier_free_guidance,
                 guess_mode=guess_mode,
             )
-            height, width = image.shape[-2:]
+            
         else:
             assert False
 
@@ -920,7 +924,7 @@ class StableDiffusionControlNeXtPipeline(
             generator,
             latents,
         )
-
+        
         # 6.5 Optionally get Guidance Scale Embedding
         timestep_cond = None
         if self.unet.config.time_cond_proj_dim is not None:
@@ -950,6 +954,7 @@ class StableDiffusionControlNeXtPipeline(
                 latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
+
                 controlnext_output = self.controlnext(
                     image,
                     t
@@ -967,14 +972,14 @@ class StableDiffusionControlNeXtPipeline(
                     return_dict=False,
                 )[0]
 
+
                 # perform guidance
                 if self.do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                     noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
-
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
-
+                
                 if callback_on_step_end is not None:
                     callback_kwargs = {}
                     for k in callback_on_step_end_tensor_inputs:
@@ -1000,9 +1005,20 @@ class StableDiffusionControlNeXtPipeline(
             torch.cuda.empty_cache()
 
         if not output_type == "latent":
-            image = self.vae.decode(latents / self.vae.config.scaling_factor, return_dict=False, generator=generator)[
-                0
-            ]
+            has_latents_mean = hasattr(self.vae.config, "latents_mean") and self.vae.config.latents_mean is not None
+            has_latents_std = hasattr(self.vae.config, "latents_std") and self.vae.config.latents_std is not None
+            if has_latents_mean and has_latents_std:
+                latents_mean = (
+                    torch.tensor(self.vae.config.latents_mean).view(1, 4, 1, 1).to(latents.device, latents.dtype)
+                )
+                latents_std = (
+                    torch.tensor(self.vae.config.latents_std).view(1, 4, 1, 1).to(latents.device, latents.dtype)
+                )
+                latents = latents * latents_std / self.vae.config.scaling_factor + latents_mean
+            else:
+                latents = latents / self.vae.config.scaling_factor
+
+            image = self.vae.decode(latents, return_dict=False)[0]
             image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_embeds.dtype)
         else:
             image = latents

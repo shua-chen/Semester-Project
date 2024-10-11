@@ -4,13 +4,14 @@ accelerate launch train_controlnext.py --pretrained_model_name_or_path "runwayml
 --logging_dir "logs" \
 --resolution 512 \
 --learning_rate 1e-5 \
+--lr_warmup_steps 300 \
 --checkpoints_total_limit 10 \
 --gradient_checkpointing \
 --set_grads_to_none \
 --proportion_empty_prompts 0.2 \
 --controlnext_scale 1.0 \
 --enable_xformers_memory_efficient_attention \
---train_data_dir "/scratch/students/2024-fall-shuhua/mydataset/FFHQ/512" \
+--train_data_dir "/scratch/students/2024-fall-shuhua/mydataset/FFHQ/512_5k" \
 --train_data_opt "/scratch/students/2024-fall-shuhua/code/Semester-Project/data_opt.yaml" \
 --image_column "image" \
 --conditioning_image_column "depth_map" \
